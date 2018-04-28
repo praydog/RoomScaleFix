@@ -8,43 +8,54 @@
 #include "common/ITypes.h"
 #include "skse64/PapyrusDelayFunctors.h"
 
+#include "Structures.hpp"
+
 // Hooks the HMDNode (contains real position of headset in world and locally)
+// I thought about using the NiNode update event in SKSE, but it doesn't seem to do anything (unless I was using it wrong?)
 class NiNodeHook {
 public:
-    static void Create();
+    using UpdateTransformCallback = std::function<void(NiNode*, NiNodeHook&, bhkCharProxyController*, const MyNiPoint3&)>;
+
+    static void Create(const std::string& name, UpdateTransformCallback callback);
+    static void Remove();
 
 public:
-    NiNodeHook();
+    NiNodeHook() = delete;
+    NiNodeHook(const std::string& name, UpdateTransformCallback callback);
+
+    virtual ~NiNodeHook() = default;
 
     void Hook();
+
     auto& GetHook() {
         return m_hook;
     }
 
-    // how to do an infinite loop 101
-    class NiNodeHookLoop : public LatentSKSEDelayFunctor {
-    public:
-        NiNodeHookLoop()
-            : LatentSKSEDelayFunctor{ 0 }
-        {
-        };
+    const auto& GetLastPos() const {
+        return m_lastPos;
+    }
 
-        const char* ClassName() const override {
-            return "NiNodeHookLoop";
-        }
+    const auto& GetLastDelta() const {
+        return m_lastDelta;
+    }
 
-        UInt32 ClassVersion() const override {
-            return 1;
-        }
+    const auto& GetNodeName() const {
+        return m_nodeName;
+    }
 
-        void Run(VMValue& out) override;
-    };
-
+    void* UpdateTransformHook(class NiNode* node, void* a2);
 
 private:
     VtableHook m_hook;
+    std::string m_nodeName;
 
-    static void* UpdateTransformHook(class NiNode* node, void* a2);
+    MyNiPoint3 m_lastPos;
+    MyNiPoint3 m_lastDelta;
+
+    UpdateTransformCallback m_callback;
+
+    class NiNode* FindNode();
+    class NiNode* FindNodeFromChildren(class NiAVObject* obj, const std::string& prefix = "");
+
+    static void* UpdateTransformHookInternal(class NiNode* node, void* a2);
 };
-
-extern std::unique_ptr<NiNodeHook> g_nodeHook;

@@ -30,3 +30,5 @@
 .vs/*
 src/x64/*
 src/Debug/*
+
+src/bin/

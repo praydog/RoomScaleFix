@@ -1,6 +1,7 @@
 #include <list>
 #include <numeric>
 #include <algorithm>
+#include <map>
 
 #include "Globals.hpp"
 #include "Structures.hpp"
@@ -9,86 +10,128 @@
 
 using namespace std;
 
-unique_ptr<NiNodeHook> g_nodeHook = nullptr;
+unordered_map<string, unique_ptr<NiNodeHook>> g_nodeHooks;
 mutex g_mutex;
-
 constexpr auto g_updateTransformIndex = 49;
 
-void NiNodeHook::NiNodeHookLoop::Run(VMValue& out) {
-    if (g_nodeHook != nullptr) {
-        g_nodeHook->Hook();
+void NiNodeHook::Create(const std::string& name, UpdateTransformCallback callback) {
+    if (g_nodeHooks[name] == nullptr) {
+        g_nodeHooks[name] = make_unique<NiNodeHook>(name, callback);
     }
+    
+    g_nodeHooks[name]->Hook();
 }
 
-void NiNodeHook::Create() {
-    g_timer.Start();
-    g_allowHookExecution = false;
+void NiNodeHook::Remove() {
+    for (auto& hook : g_nodeHooks) {
+        hook.second.reset();
+    }
 
-    if (g_nodeHook == nullptr) {
-        g_nodeHook = make_unique<NiNodeHook>();
-    }
-    else {
-        g_nodeHook->Hook();
-    }
+    g_nodeHooks.clear();
 }
 
-NiNodeHook::NiNodeHook() {
-    Hook();
+NiNodeHook::NiNodeHook(const std::string& name, UpdateTransformCallback callback)
+    : m_nodeName{ name },
+    m_lastPos{},
+    m_callback{ callback }
+{
+    // Don't do hook in here because the pointer may not be assigned by the time hook returns
+    // At least, I think that will happen.
 }
 
 void NiNodeHook::Hook() {
     // just incase some bad voodoo happens
     lock_guard<mutex> lock(g_mutex);
 
-    // infinite loop, check for re-hook every second
-    /*struct ScopeGuard { 
-        ~ScopeGuard() { g_object->GetDelayFunctorManager().Enqueue(new NiNodeHookLoop{}, 1000); }
-    } scopeGuard;*/
-
-    auto myPlayer = (MyPlayer*)*g_thePlayer.GetPtr();
-
-    if (myPlayer == nullptr) {
-        return;
-    }
-
-    auto hmdNode = myPlayer->hmdNode;
+    auto hookNode = FindNode();
 
     // dont hook if not ready or already hooked.
-    if (hmdNode == nullptr || *(void**)hmdNode == nullptr) {
+    if (hookNode == nullptr || *(void**)hookNode == nullptr) {
         return;
     }
 
-    if (m_hook.getInstance().ptr() == hmdNode) {
-        return;
+    _MESSAGE("Attempting to hook %s", hookNode->m_name);
+
+    // Vtable hook. Recreate on every load
+    if (m_hook.create(hookNode)) {
+        m_hook.hookMethod(g_updateTransformIndex, &NiNodeHook::UpdateTransformHookInternal);
+
+        m_lastPos = {};
+        m_lastDelta = {};
+
+        _MESSAGE("Hooked %s", m_nodeName.c_str());
+
+        // beep boop
+        MessageBeep(0);
     }
-
-    _MESSAGE("Attempting to hook HmdNode");
-
-    // Vtable hook
-    if (m_hook.create(hmdNode)) {
-        m_hook.hookMethod(g_updateTransformIndex, &NiNodeHook::UpdateTransformHook);
-
-        _MESSAGE("Hooked HmdNode");
+    else {
+        _MESSAGE("Failed to hook %s", m_nodeName.c_str());
     }
 }
 
-void* NiNodeHook::UpdateTransformHook(class NiNode* node, void* a2) {
+class NiNode* NiNodeHook::FindNode() {
+    _MESSAGE("Checking player");
+
+    auto player = *g_thePlayer.GetPtr();
+    auto myPlayer = (MyPlayer*)player;
+
+    if (player == nullptr) {
+        return nullptr;
+    }
+
+    return FindNodeFromChildren((NiAVObject*)myPlayer->playerWorldNode);
+}
+
+class NiNode* NiNodeHook::FindNodeFromChildren(NiAVObject* obj, const std::string& prefix) {
+    if (obj == nullptr) {
+        return nullptr;
+    }
+
+    auto normalNode = DYNAMIC_CAST(obj, NiAVObject, NiNode);
+    auto node = (MyNiNode*)normalNode;
+
+    // cast failed
+    if (normalNode == nullptr) {
+        return nullptr;
+    }
+
+    if (normalNode->m_name != nullptr && m_nodeName == normalNode->m_name) {
+        return (NiNode*)node;
+    }
+
+    if (normalNode->m_name != nullptr) {
+        _MESSAGE("%s%s (0x%p)", prefix.c_str(), normalNode->m_name, normalNode);
+    }
+
+    if (node->children.m_data == nullptr || node->children.m_size == 0 || node->children.m_arrayBufLen == 0) {
+        return nullptr;
+    }
+
+    for (auto i = 0; i < node->children.m_emptyRunStart; ++i) {
+        auto child = node->children.m_data[i];
+
+        if (child == nullptr) {
+            continue;
+        }
+
+        if (auto childNode = FindNodeFromChildren(child, prefix + " ")) {
+            return childNode;
+        }
+    }
+
+    return nullptr;
+}
+
+void* NiNodeHook::UpdateTransformHookInternal(class NiNode* node, void* a2) {
     // this function gets called from multiple threads. for some reason. we might need a different candidate if this starts causing issues.
     lock_guard<mutex> guard(g_mutex);
 
-    auto& hook = g_nodeHook->GetHook();
-    auto func = hook.getMethod<decltype(NiNodeHook::UpdateTransformHook)*>(g_updateTransformIndex);
+    return g_nodeHooks[node->m_name]->UpdateTransformHook(node, a2);
+}
 
+void* NiNodeHook::UpdateTransformHook(NiNode* node, void* a2) {
+    auto func = m_hook.getMethod<void* (__thiscall*)(NiNode*, void*)>(g_updateTransformIndex);
     auto ret = func(node, a2);
-
-    if (!g_allowHookExecution) {
-        // After 3 seconds allow this hook to run
-        if (g_timer.GetElapsedTime() > 3.0) {
-            g_allowHookExecution = true;
-        }
-
-        return ret;
-    }
 
     auto player = *g_thePlayer.GetPtr();
     auto myPlayer = (MyPlayer*)player;
@@ -103,60 +146,28 @@ void* NiNodeHook::UpdateTransformHook(class NiNode* node, void* a2) {
     }
 
     auto proxy = (bhkCharProxyController*)player->processManager->middleProcess->unk250;
-    auto hmdNode = myPlayer->hmdNode;
-    auto followNode = myPlayer->followNode;
     auto roomNode = myPlayer->roomNode;
 
     // essentialz
-    if (hmdNode == nullptr || followNode == nullptr || roomNode == nullptr || proxy == nullptr || proxy->positionContainer == nullptr) {
+    if (roomNode == nullptr || proxy == nullptr || proxy->positionContainer == nullptr) {
         return ret;
     }
 
-    static auto lastPos = hmdNode->m_localTransform.pos;
-
     // smoothest way to do it. local transform does not reset on dirty.
-    auto delta = myPlayer->followNode->m_worldTransform.rot * (hmdNode->m_localTransform.pos - lastPos);
-
-    // we dont wanna move really far.
-    delta.x = clamp(delta.x, -25.0f, 25.0f);
-    delta.y = clamp(delta.y, -25.0f, 25.0f);
-
-    auto len = VectorLength2D(delta);
+    MyNiPoint3 localDelta{ node->m_localTransform.pos - m_lastPos };
+    auto len = localDelta.Length2D();
 
     // Because this gets called from multiple threads, it may not be updating the transform constantly.
     // So, only do shit when the delta is actually changing.
     if (len > 0.0f) {
-        // This is for optional ninja crazy style movement using your headset to move real fast
-        /*static list<float> accumulation;
-
-        accumulation.push_back(len);
-
-        auto total = accumulate(accumulation.begin(), accumulation.end(), 0.0f);
-        
-        if (accumulation.size() > 90) {
-            accumulation.pop_front();
+        if (m_callback) {
+            m_callback(node, *this, proxy, localDelta);
         }
-
-        delta.x *= clamp(total * 0.1f, 1.0f, 25.0f);
-        delta.y *= clamp(total * 0.1f, 1.0f, 25.0f);*/
-
-        // Tells engine to resync roomNode and others. This is what gets set when rotating the camera with controllers
-        myPlayer->hmdFlags |= (uint8_t)HMDFlag::FLAG_DIRTY;
-        
-        // Update real player position
-        proxy->positionContainer->pos.x += delta.x / SKYRIM_SCALE;
-        proxy->positionContainer->pos.y += delta.y / SKYRIM_SCALE;
-        
-        auto newPos = proxy->positionContainer->pos * SKYRIM_SCALE;
-        roomNode->m_localTransform.pos.x = hmdNode->m_localTransform.pos.x * -1.0f;
-        roomNode->m_localTransform.pos.y = hmdNode->m_localTransform.pos.y * -1.0f;
-        roomNode->m_worldTransform.pos.x = newPos.x;
-        roomNode->m_worldTransform.pos.y = newPos.y;
-        player->pos.x = newPos.x;
-        player->pos.y = newPos.y;
     }
 
-    lastPos = hmdNode->m_localTransform.pos;
+    m_lastPos = node->m_localTransform.pos;
+    m_lastDelta = localDelta;
 
     return ret;
 }
+

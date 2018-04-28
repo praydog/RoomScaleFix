@@ -7,9 +7,65 @@
 
 constexpr float SKYRIM_SCALE = 69.991249f;
 
-float VectorLength2D(const NiPoint3& vec) {
-    return sqrt(vec.x * vec.x + vec.y * vec.y);
-}
+class MyNiPoint3 : public NiPoint3 {
+public:
+    MyNiPoint3() 
+        : NiPoint3{} 
+    {
+    }
+
+    MyNiPoint3(const NiPoint3& other) 
+        : NiPoint3{ other }
+    {
+    }
+
+    MyNiPoint3(const MyNiPoint3& other)
+        : NiPoint3{ other }
+    {
+    }
+
+    MyNiPoint3(float x, float y, float z) 
+        : NiPoint3{ x, y, z } 
+    {
+    }
+
+    float Length2D() const {
+        return sqrt(x * x + y * y);
+    }
+
+    float Length() const {
+        return sqrt(x * x + y * y + z * z);
+    }
+
+    MyNiPoint3 operator*(float scalar) const {
+        return MyNiPoint3{ x * scalar, y * scalar, z * scalar };
+    }
+
+    MyNiPoint3& operator*=(float scalar) {
+        x *= scalar;
+        y *= scalar;
+        z *= scalar;
+
+        return *this;
+    }
+
+    MyNiPoint3 operator*(const MyNiPoint3& other) const {
+        return MyNiPoint3{ x * other.x, y * other.y, z * other.z };
+    }
+
+    MyNiPoint3& operator*= (const MyNiPoint3& other) {
+        x *= other.x; 
+        y *= other.y; 
+        z *= other.z;
+
+        return *this;
+    }
+
+    operator NiPoint3&() {
+        return *this;
+    }
+};
+
 
 // 0x20 bytes within an hkpCachingShapePhantom
 struct PositionContainer {
@@ -60,3 +116,8 @@ struct MyPlayer {
     uint8_t hmdFlags; //0x12C6
     char pad_12C7[121]; //0x12C7
 }; //Size: 0x1040
+
+struct MyNiNode {
+    char crap[0x138];
+    NiTArray <NiAVObject *>	children;
+};

@@ -35,11 +35,7 @@ VtableHook::~VtableHook() {
 
 bool VtableHook::create(Address target) {
     if (!m_rawData.empty()) {
-        // Can cause issues where we set the vtable/random memory of some other pointer.
-        if (m_vtablePtr != nullptr && IsBadReadPtr(m_vtablePtr.ptr(), sizeof(void*)) == FALSE && m_vtablePtr.to<void*>() == m_newVtable) {
-            remove();
-        }
-
+        remove();
         m_rawData.clear();
     }
 
@@ -70,7 +66,8 @@ bool VtableHook::recreate() {
 }
 
 bool VtableHook::remove() {
-    if (m_vtablePtr != nullptr) {
+    // Can cause issues where we set the vtable/random memory of some other pointer.
+    if (m_vtablePtr != nullptr && IsBadReadPtr(m_vtablePtr.ptr(), sizeof(void*)) == FALSE && m_vtablePtr.to<void*>() == m_newVtable) {
         *m_vtablePtr.as<Address*>() = m_oldVtable;
         return true;
     }
